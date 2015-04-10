@@ -1,7 +1,7 @@
 ###########################
 # File: Collect_IGM.R
 # Description: 
-#   (1) Harvest (scrape) survey responses from IMG Chicago
+#   (1) Collect (scrape) econ survey responses from IMG Chicago
 #   (2) Loop through list of survey links and parse html using xpath selectors
 #   (3) Collect the results into a data_frame and output results to a csv file
 # Date: 4/09/2015
@@ -29,15 +29,14 @@ doc <- html(x = igm_links_url, encoding = "UTF-8")
 survey_links <- doc %>%
   html_nodes(xpath = "//h3[@class='surveyQuestion']/a[@href][1]") %>%
   html_attr(name = "href") %>%
-  str_c(base_igm_url, .) # Note magrittr argument placeholder
+  str_c(base_igm_url, .) %>%  # Note magrittr argument placeholder
+  unique()
 
 # Initialize an empty data frame to collect results
 final <- data_frame()
 
 # Loop through question links
 for (i in survey_links) {
-  
-  i <- survey_links[2]
   
   doc <- html(i, encoding = "UTF-8")
   
@@ -54,32 +53,65 @@ for (i in survey_links) {
     html_text() %>% 
     str_trim()
   
-  # Get the question
-  question <- doc %>%
-    html_nodes(xpath = "//h3[@class='surveyQuestion']") %>% #/following-sibling::p") %>%
-    html_text() %>% 
-    str_replace_all(pattern = "Question\\s\\w+:", replacement = "") %>%
-    str_trim()
+  # Count the questions
+  nquestions <- doc %>%
+    html_nodes(xpath= "//h3[@class='surveyQuestion']") %>%
+    length()
   
+  # Build vector of question ids
+  qids <- str_c("Question ", LETTERS[1:nquestions], ":")
+  
+  if (nquestions == 1) {
+    
+    # Get the question if only one
+    questions <- doc %>% 
+      html_nodes(xpath = "//h3[@class='surveyQuestion']") %>%
+      html_text() %>% 
+      str_trim()
+    
+    if (length(questions) == 0) {
+      
+      # If empty use alternative xpath
+      questions <- doc %>% 
+        html_nodes(xpath = "//h3[@class='surveyQuestion']/following-sibling::p") %>%
+        html_text() %>% 
+        str_trim()      
+    }
+    
+  }
+  
+  if (nquestions > 1) {
+    
+    # Get the questions and overwrite questions object if multiple Qs
+    questions <- doc %>%
+      html_nodes(xpath = "//h3[@class='surveyQuestion']") %>%
+      html_text() %>% 
+      str_replace_all(pattern = "Question\\s\\w+:", replacement = "") %>%
+      str_trim()
+    
+  }
+  
+  # Get the table node
   tables <- doc %>%
     html_nodes("table") %>%
-    html_table(fill = TRUE, trim = TRUE)
+    html_table(fill = TRUE, trim = TRUE) %>%
+    setNames(nm = qids)
   
-  headers <- 
-
+  # Collapse responses data frames into single df
   responses <- tables %>% 
-    rbind_all() %>%
-    filter(Participant != "") %>%
+    plyr::ldply() %>% # Use plyr rbind until dplyr supports adding id
+    filter(!is.na(`Bio/Vote History`)) %>%
     select(-`Bio/Vote History`) # drop column
   
-  # Add question and date to results
-  responses %<>% mutate(Question = question, 
-                        Date     = date, 
-                        Category = category) %>%
-                 select(Date, Category, Participant:Question) # reorder columns
+  # Creat question data frame
+  qdf <- data_frame(.id = qids, Date = date, Category = category, 
+                    Question = questions)
   
+  # Merge question metadata to responses
+  combined <- left_join(qdf, responses, by = ".id")
+
   # Add results to empty data frame
-  final <- rbind_list(final, responses)
+  final <- rbind_list(final, combined)
   
   # Be polite to server
   Sys.sleep(time = 2)
